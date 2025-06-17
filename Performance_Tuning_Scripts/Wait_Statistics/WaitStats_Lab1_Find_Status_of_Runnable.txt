@@ -1,0 +1,182 @@
+
+USE [master];
+GO
+
+IF DATABASEPROPERTYEX (N'HotSpot', N'Version') > 0
+BEGIN
+	ALTER DATABASE [sampledb] SET SINGLE_USER
+		WITH ROLLBACK IMMEDIATE;
+	DROP DATABASE [sampledb];
+END
+GO
+
+CREATE DATABASE [sampledb] 
+GO
+
+ALTER DATABASE [sampledb] SET RECOVERY SIMPLE;
+GO
+
+USE [sampledb];
+GO
+
+CREATE TABLE [HotSpotTable] (
+	[c1] INT IDENTITY);
+
+CREATE CLUSTERED INDEX [HotSpotTable_CL] ON
+	[HotSpotTable] ([c1]);
+GO
+
+----separate window run 6 timmes
+
+USE [sampledb];
+
+SET NOCOUNT ON;
+GO
+
+WHILE (1 = 1)
+BEGIN
+	INSERT INTO [HotSpotTable] DEFAULT VALUES;
+END;
+GO
+
+----- Now run separate to find status of process ( running/suspended/ raunnable ) 
+SELECT
+	[ot].[scheduler_id],
+	[task_state],
+	COUNT (*) AS [task_count]
+FROM
+	sys.dm_os_tasks AS [ot]
+INNER JOIN
+	sys.dm_exec_requests AS [er]
+    ON [ot].[session_id] = [er].[session_id]
+INNER JOIN
+	sys.dm_exec_sessions AS [es]
+    ON [er].[session_id] = [es].[session_id]
+WHERE
+	[es].[is_user_process] = 1
+GROUP BY
+	[ot].[scheduler_id],
+	[task_state]
+ORDER BY
+	[task_state],
+	[ot].[scheduler_id];
+GO
+
+----- Now agian run separate to find status of process ( running/suspended/ raunnable )
+
+SELECT
+	[ot].[scheduler_id],
+	[task_state],
+	COUNT (*) AS [task_count]
+FROM
+	sys.dm_os_tasks AS [ot]
+INNER JOIN
+	sys.dm_exec_requests AS [er]
+    ON [ot].[session_id] = [er].[session_id]
+INNER JOIN
+	sys.dm_exec_sessions AS [es]
+    ON [er].[session_id] = [es].[session_id]
+WHERE
+	[es].[is_user_process] = 1
+GROUP BY
+	[ot].[scheduler_id],
+	[task_state]
+ORDER BY
+	[task_state],
+	[ot].[scheduler_id];
+GO
+
+-- Now run custome script to find Waits issue 
+
+--drop database after demo 
+
+USE [master];
+GO
+
+IF DATABASEPROPERTYEX (N'HotSpot', N'Version') > 0
+BEGIN
+	ALTER DATABASE [sampledb] SET SINGLE_USER
+		WITH ROLLBACK IMMEDIATE;
+	DROP DATABASE [sampledb];
+END
+
+Go
+
+Download the SalesDB database zip file, unzip it and restore it.
+Get it from:
+http://bit.ly/M0HHUg
+
+Here's an example of restoring it:
+
+RESTORE DATABASE [SalesDB]
+	FROM DISK = N'D:\projectt\SalesDBOriginal.bak'
+	WITH MOVE N'SalesDBData' TO N'D:\projectt\SalesDBData.mdf',
+	MOVE N'SalesDBLog' TO N'D:\projectt\SalesDBLog.ldf',
+	REPLACE, STATS = 10;
+GO
+*/
+
+-- Clear the waits in WaitStats1.sql
+
+SELECT * FROM [SalesDB].[dbo].[Sales];
+GO
+
+-- While that's running, examine waits in WaitStats1.sql
+
+
+
+WITH [Waits] AS
+	(SELECT
+		[wait_type],
+		[wait_time_ms] / 1000.0 AS [WaitS],
+		([wait_time_ms] - [signal_wait_time_ms]) / 1000.0
+			AS [ResourceS],
+		[signal_wait_time_ms] / 1000.0 AS [SignalS],
+		[waiting_tasks_count] AS [WaitCount],
+		100.0 * [wait_time_ms] / SUM ([wait_time_ms]) OVER()
+			AS [Percentage],
+		ROW_NUMBER() OVER(ORDER BY [wait_time_ms] DESC)
+			AS [RowNum]
+	FROM sys.dm_os_wait_stats
+	WHERE [wait_type] NOT IN (
+		N'CLR_SEMAPHORE',    N'LAZYWRITER_SLEEP',
+		N'RESOURCE_QUEUE',   N'SQLTRACE_BUFFER_FLUSH',
+		N'SLEEP_TASK',       N'SLEEP_SYSTEMTASK',
+		N'WAITFOR',          N'HADR_FILESTREAM_IOMGR_IOCOMPLETION',
+		N'CHECKPOINT_QUEUE', N'REQUEST_FOR_DEADLOCK_SEARCH',
+		N'XE_TIMER_EVENT',   N'XE_DISPATCHER_JOIN',
+		N'LOGMGR_QUEUE',     N'FT_IFTS_SCHEDULER_IDLE_WAIT',
+		N'BROKER_TASK_STOP', N'CLR_MANUAL_EVENT',
+		N'CLR_AUTO_EVENT',   N'DISPATCHER_QUEUE_SEMAPHORE',
+		N'TRACEWRITE',       N'XE_DISPATCHER_WAIT',
+		N'BROKER_TO_FLUSH',  N'BROKER_EVENTHANDLER',
+		N'FT_IFTSHC_MUTEX',  N'SQLTRACE_INCREMENTAL_FLUSH_SLEEP',
+		N'DIRTY_PAGE_POLL')
+	)
+SELECT
+	[W1].[wait_type] AS [WaitType], 
+	CAST ([W1].[WaitS] AS DECIMAL(14, 2)) AS [Wait_S],
+	CAST ([W1].[ResourceS] AS DECIMAL(14, 2)) AS [Resource_S],
+	CAST ([W1].[SignalS] AS DECIMAL(14, 2)) AS [Signal_S],
+	[W1].[WaitCount] AS [WaitCount],
+	CAST ([W1].[Percentage] AS DECIMAL(4, 2)) AS [Percentage],
+	CAST (([W1].[WaitS] / [W1].[WaitCount]) AS DECIMAL (14, 4))
+		AS [AvgWait_S],
+	CAST (([W1].[ResourceS] / [W1].[WaitCount]) AS DECIMAL (14, 4))
+		AS [AvgRes_S],
+	CAST (([W1].[SignalS] / [W1].[WaitCount]) AS DECIMAL (14, 4))
+		AS [AvgSig_S]
+FROM [Waits] AS [W1]
+INNER JOIN [Waits] AS [W2]
+	ON [W2].[RowNum] <= [W1].[RowNum]
+GROUP BY [W1].[RowNum], [W1].[wait_type], [W1].[WaitS], 
+	[W1].[ResourceS], [W1].[SignalS], [W1].[WaitCount],
+	[W1].[Percentage]
+HAVING
+	SUM ([W2].[Percentage]) - [W1].[Percentage] < 95; -- percentage
+GO
+
+-- Clear wait stats 
+-- DBCC SQLPERF (N'sys.dm_os_wait_stats', CLEAR);
+
+
